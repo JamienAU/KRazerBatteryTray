@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+try:
+    import sys
+    from re import sub
+    from openrazer.client import DeviceManager
+    from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
+    from PyQt6.QtGui import QIcon, QAction, QActionGroup
+    from PyQt6.QtCore import QTimer, QSettings
+    from datetime import datetime
+except ModuleNotFoundError as e:
+    print(f"Missing dependency: {e.name}")
+    sys.exit(1)
+
+
+class BatteryTray:
+    def __init__(self, device_manager):
+        self.app = QApplication(sys.argv)
+        self.app.setQuitOnLastWindowClosed(False)
+        self.device_manager = device_manager
+
+        # Settings storage
+        self.settings = QSettings("KRazerBatteryTray", "Settings")
+        self.interval_minutes = self.settings.value("refresh_interval", 30, type=int)
+        self.alert_caution = self.settings.value("alert_caution", True, type=bool)
+        self.alert_critical = self.settings.value("alert_critical", True, type=bool)
+
+        # Log last refresh time
+        self.last_refresh = datetime.now()
+
+        # Get devices with battery
+        self.dev_with_battery = self.get_battery_devices()
+
+        # Set up system tray
+        self.setup_tray()
+        QTimer.singleShot(100, self.update_tray_display)
+
+        # Refresh at a user defined interval in minutes
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.refresh_battery_info)
+        self.timer.start(self.interval_minutes * 60 * 1000)
+
+    def get_battery_devices(self):
+        battery_devices = []
+        for device in self.device_manager.devices:
+            try:
+                if hasattr(device, 'battery_level'):
+                    battery_level = device.battery_level
+                    if device.battery_level != 0:
+                        battery_devices.append({
+                            'device': device,
+                            'name': device.name,
+                            'level': battery_level
+                        })
+            except Exception:
+                continue
+        return battery_devices
+    
+    def setup_tray(self):
+        self.tray_icon = QSystemTrayIcon(self.app)
+        
+        # Icon and tooltip
+        self.update_tray_display()
+        self.tray_icon.setVisible(True)
+
+        # Context menu
+        menu = QMenu()
+        menu.addAction(self.create_single_action("Refresh devices", menu, self.refresh_battery_info))
+        menu.addMenu(self.create_child_menu("Refresh frequency", "refresh_menu", menu, self.update_refresh_menu))
+        menu.addMenu(self.create_child_menu("Alert options", "alert_menu", menu, self.update_alert_menu))
+        menu.addSeparator()
+        menu.addAction(self.create_single_action("Exit", menu, self.app.quit))
+        
+        
+        self.tray_icon.setContextMenu(menu)
+
+    # Update tray icon and tooltip
+    def update_tray_display(self):
+        if not self.dev_with_battery:
+            self.tray_icon.setToolTip("No Razer devices with battery")
+            self.tray_icon.setIcon(QIcon.fromTheme("battery-missing"))
+            return
+        
+        # Tooltip with battery levels
+        refresh_str = self.last_refresh.strftime("%H:%M")
+        tooltip_lines = [f"Last updated:\t{refresh_str}\nRefresh interval:\t{self.interval_minutes} min\n"]
+        for device_info in self.dev_with_battery:
+            name_str = sub(r'(?i)Razer\s|\s\(Wireless\)','',device_info["name"])
+            tooltip_lines.append(f"{name_str}:\t{device_info['level']}%")
+        tooltip_text = "\n".join(tooltip_lines)
+        self.tray_icon.setToolTip(tooltip_text)
+
+        # Set icon based on lowest level
+        lowest_device = min(self.dev_with_battery, key=lambda d: d['level'])
+        min_level = lowest_device['level']
+        if min_level <= 10:
+            icon_name = "battery-empty"
+            if self.alert_critical == True:
+                self.tray_icon.showMessage("Battery critical!", f"{lowest_device['name']} battery level is critical -- .\nPlease charge the device.", QSystemTrayIcon.MessageIcon.Warning)
+        elif min_level <= 30:
+            icon_name = "battery-caution"
+            if self.alert_caution == True:
+                self.tray_icon.showMessage("Battery low", f"{lowest_device['name']} battery level is low.\nPlease charge the device.", QSystemTrayIcon.MessageIcon.Warning)
+        elif min_level <= 50:
+            icon_name = "battery-low"
+        elif min_level <= 75:
+            icon_name = "battery-good"
+        else:
+            icon_name = "battery-full"
+
+        self.tray_icon.setIcon(QIcon.fromTheme(icon_name))
+        
+    # Refresh levels and update display
+    def refresh_battery_info(self):
+        self.dev_with_battery = self.get_battery_devices()
+        self.last_refresh = datetime.now()
+        self.update_tray_display()
+
+    # Set refresh frequency
+    def set_refresh_interval(self, minutes):
+        self.interval_minutes = minutes
+        self.settings.setValue("refresh_interval", minutes)
+        self.timer.setInterval(minutes * 60 * 1000)
+        self.refresh_battery_info()
+
+    # Set alert settings
+    def set_alert_setting(self, setting, value):
+        setattr(self, setting, value)
+        self.settings.setValue(setting, value)
+
+    # Single menu helper
+    def create_single_action(self, name, parent, connect_action):
+        action = QAction(name, parent)
+        action.triggered.connect(connect_action)
+        return action
+
+    # Child menu helper
+    def create_child_menu(self, name, ref_name, parent, connect_action):
+        menu = QMenu(name, parent)
+        menu.aboutToShow.connect(connect_action)
+        setattr(self, ref_name, menu)
+        return menu
+
+    # Update refresh frequency menu
+    def update_refresh_menu(self):
+        self.refresh_menu.clear()
+        group = QActionGroup(self.refresh_menu)
+        group.setExclusive(True)
+        for minutes in [1,5,10,30,60]:
+            action = QAction(f"{minutes} min", self.refresh_menu)
+            action.setCheckable(True)
+            action.setChecked(minutes == self.interval_minutes)
+            action.triggered.connect(lambda _, m=minutes: self.set_refresh_interval(m))
+            group.addAction(action)
+            self.refresh_menu.addAction(action)
+
+    # Create alert menu
+    def update_alert_menu(self):
+        self.alert_menu.clear()
+        battery_states = [
+            {"name": "Battery low", "setting": "alert_caution"},
+            {"name": "Battery critical", "setting": "alert_critical"}
+        ]
+        for state in battery_states:
+            action = QAction(state["name"], self.alert_menu)
+            action.setCheckable(True)
+            action.setChecked(getattr(self, state["setting"], True))
+            action.triggered.connect(lambda _, a=action, s=state["setting"]: self.set_alert_setting(s, a.isChecked()))
+            self.alert_menu.addAction(action)
+
+    def run(self):
+        sys.exit(self.app.exec())
+
+def main():
+    try:
+        dm = DeviceManager()
+    except Exception as e:
+        print(f"OpenRazer daemon not available: {e}")
+        sys.exit(1)
+
+    # Create and run tray application
+    tray_app = BatteryTray(dm)
+    tray_app.run()
+
+if __name__ == "__main__":
+    main()
