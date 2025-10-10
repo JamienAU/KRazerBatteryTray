@@ -70,8 +70,8 @@ class BatteryTray:
         menu.addSeparator()
         menu.addAction(self.create_single_action("Exit", menu, self.app.quit))
         
-        
         self.tray_icon.setContextMenu(menu)
+        self.tray_icon.activated.connect(self.left_click_handler)
 
     # Update tray icon and tooltip
     def update_tray_display(self):
@@ -166,6 +166,11 @@ class BatteryTray:
             action.setChecked(getattr(self, state["setting"], True))
             action.triggered.connect(lambda _, a=action, s=state["setting"]: self.set_alert_setting(s, a.isChecked()))
             self.alert_menu.addAction(action)
+
+    # Do things on left click
+    def left_click_handler(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self.refresh_battery_info()
 
     def run(self):
         sys.exit(self.app.exec())
