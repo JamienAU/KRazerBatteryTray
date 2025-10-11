@@ -18,6 +18,8 @@ class BatteryTray:
         self.app.setQuitOnLastWindowClosed(False)
         self.device_manager = device_manager
         self.fast_refresh = False
+        self.name_cache = {}
+        self.icon_cache = {}
 
         # Settings storage
         self.settings = QSettings("KRazerBatteryTray", "Settings")
@@ -46,11 +48,15 @@ class BatteryTray:
         for device in self.device_manager.devices:
             try:
                 if hasattr(device, 'battery_level'):
+                    if device.serial not in self.name_cache:
+                        regex_name = sub(r'(?i)Razer\s|\s\(Wireless\)','',device.name)
+                        self.name_cache[device.serial] = regex_name
+
                     battery_level = device.battery_level
                     if device.battery_level != 0:
                         battery_devices.append({
                             'device': device,
-                            'name': device.name,
+                            'name': self.name_cache[device.serial],
                             'level': battery_level
                         })
             except Exception:
@@ -68,7 +74,9 @@ class BatteryTray:
         menu = QMenu()
         menu.addAction(self.create_single_action("Refresh devices", menu, self.manual_refresh))
         menu.addMenu(self.create_child_menu("Refresh frequency", "refresh_menu", menu, self.update_refresh_menu))
+        self.build_refresh_menu()
         menu.addMenu(self.create_child_menu("Alert options", "alert_menu", menu, self.update_alert_menu))
+        self.build_alert_menu()
         menu.addSeparator()
         menu.addAction(self.create_single_action("Exit", menu, self.app.quit))
         
@@ -79,7 +87,9 @@ class BatteryTray:
     def update_tray_display(self):
         if not self.dev_with_battery:
             self.tray_icon.setToolTip("No Razer devices with battery")
-            self.tray_icon.setIcon(QIcon.fromTheme("battery-missing"))
+            if "battery-missing" not in self.icon_cache:
+                self.icon_cache["battery-missing"] = QIcon.fromTheme("battery-missing")
+            self.tray_icon.setIcon(self.icon_cache["battery-missing"])
             if self.fast_refresh_enabled and not self.fast_refresh:
                 self.set_fast_refresh()
             return
@@ -92,8 +102,7 @@ class BatteryTray:
         refresh_str = self.last_refresh.strftime("%H:%M:%S")
         tooltip_lines = [f"Last updated:\t{refresh_str}\nRefresh interval:\t{self.interval_minutes} min\n"]
         for device_info in self.dev_with_battery:
-            name_str = sub(r'(?i)Razer\s|\s\(Wireless\)','',device_info["name"])
-            tooltip_lines.append(f"{name_str}:\t{device_info['level']}%")
+            tooltip_lines.append(f"{device_info["name"]}:\t{device_info['level']}%")
         tooltip_text = "\n".join(tooltip_lines)
         self.tray_icon.setToolTip(tooltip_text)
 
@@ -114,8 +123,9 @@ class BatteryTray:
             icon_name = "battery-good"
         else:
             icon_name = "battery-full"
-
-        self.tray_icon.setIcon(QIcon.fromTheme(icon_name))
+        if icon_name not in self.icon_cache:
+                self.icon_cache[icon_name] = QIcon.fromTheme(icon_name)
+        self.tray_icon.setIcon(self.icon_cache[icon_name])
         
     # Refresh levels and update display
     def refresh_battery_info(self):
@@ -168,27 +178,33 @@ class BatteryTray:
         setattr(self, ref_name, menu)
         return menu
 
-    # Update refresh frequency menu
-    def update_refresh_menu(self):
-        self.refresh_menu.clear()
+    # Build refresh frequency menu
+    def build_refresh_menu(self):
+        self.refresh_actions = {}
+        self.fast_refresh_action = {}
         group = QActionGroup(self.refresh_menu)
         group.setExclusive(True)
         for minutes in [1,5,10,30,60]:
-            action = QAction(f"{minutes} min", self.refresh_menu)
-            action.setCheckable(True)
-            action.setChecked(minutes == self.interval_minutes)
+            action = QAction(f"{minutes} min", self.refresh_menu, checkable=True)
             action.triggered.connect(lambda _, m=minutes: self.set_refresh_interval(m))
             group.addAction(action)
             self.refresh_menu.addAction(action)
+            self.refresh_actions[minutes] = action
         fast_action = QAction("Fast refresh on\nno device detected", self.refresh_menu)
         fast_action.setCheckable(True)
-        fast_action.setChecked(getattr(self, "fast_refresh_enabled", True))
         fast_action.triggered.connect(lambda _, a=fast_action: self.set_fast_refresh_setting(a.isChecked()))
         self.refresh_menu.addAction(fast_action)
+        self.fast_refresh_action = fast_action
+        
+    # Update refresh frequency menu
+    def update_refresh_menu(self):
+        for minutes, action in self.refresh_actions.items():
+            action.setChecked(minutes == self.interval_minutes)
+        self.fast_refresh_action.setChecked(getattr(self, "fast_refresh_enabled", True))
 
-    # Create alert menu
-    def update_alert_menu(self):
-        self.alert_menu.clear()
+    # Build alert menu
+    def build_alert_menu(self):
+        self.alert_actions = {}
         battery_states = [
             {"name": "Battery low", "setting": "alert_caution"},
             {"name": "Battery critical", "setting": "alert_critical"}
@@ -196,9 +212,15 @@ class BatteryTray:
         for state in battery_states:
             action = QAction(state["name"], self.alert_menu)
             action.setCheckable(True)
-            action.setChecked(getattr(self, state["setting"], True))
             action.triggered.connect(lambda _, a=action, s=state["setting"]: self.set_alert_setting(s, a.isChecked()))
             self.alert_menu.addAction(action)
+            self.alert_actions[state["setting"]] = action
+
+    # Update alert menu
+    def update_alert_menu(self):
+        for setting, action in self.alert_actions.items():
+                action.setChecked(getattr(self, setting, True))
+        
 
     # Do things on left click
     def left_click_handler(self, reason):
