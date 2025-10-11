@@ -17,12 +17,14 @@ class BatteryTray:
         self.app = QApplication(sys.argv)
         self.app.setQuitOnLastWindowClosed(False)
         self.device_manager = device_manager
+        self.fast_refresh = False
 
         # Settings storage
         self.settings = QSettings("KRazerBatteryTray", "Settings")
         self.interval_minutes = self.settings.value("refresh_interval", 30, type=int)
         self.alert_caution = self.settings.value("alert_caution", True, type=bool)
         self.alert_critical = self.settings.value("alert_critical", True, type=bool)
+        self.fast_refresh_enabled = self.settings.value("fast_refresh_enabled", True, type=bool)
 
         # Log last refresh time
         self.last_refresh = datetime.now()
@@ -30,14 +32,14 @@ class BatteryTray:
         # Get devices with battery
         self.dev_with_battery = self.get_battery_devices()
 
-        # Set up system tray
-        self.setup_tray()
-        QTimer.singleShot(100, self.update_tray_display)
-
         # Refresh at a user defined interval in minutes
         self.timer = QTimer()
         self.timer.timeout.connect(self.refresh_battery_info)
         self.timer.start(self.interval_minutes * 60 * 1000)
+
+        # Set up system tray
+        self.setup_tray()
+        QTimer.singleShot(100, self.update_tray_display)
 
     def get_battery_devices(self):
         battery_devices = []
@@ -64,7 +66,7 @@ class BatteryTray:
 
         # Context menu
         menu = QMenu()
-        menu.addAction(self.create_single_action("Refresh devices", menu, self.refresh_battery_info))
+        menu.addAction(self.create_single_action("Refresh devices", menu, self.manual_refresh))
         menu.addMenu(self.create_child_menu("Refresh frequency", "refresh_menu", menu, self.update_refresh_menu))
         menu.addMenu(self.create_child_menu("Alert options", "alert_menu", menu, self.update_alert_menu))
         menu.addSeparator()
@@ -78,10 +80,16 @@ class BatteryTray:
         if not self.dev_with_battery:
             self.tray_icon.setToolTip("No Razer devices with battery")
             self.tray_icon.setIcon(QIcon.fromTheme("battery-missing"))
+            if self.fast_refresh_enabled and not self.fast_refresh:
+                self.set_fast_refresh()
             return
         
+        # Set the refresh interval back to user setting if fast refresh is enabled and a device is found
+        if self.fast_refresh:
+            self.set_fast_refresh(True)
+
         # Tooltip with battery levels
-        refresh_str = self.last_refresh.strftime("%H:%M")
+        refresh_str = self.last_refresh.strftime("%H:%M:%S")
         tooltip_lines = [f"Last updated:\t{refresh_str}\nRefresh interval:\t{self.interval_minutes} min\n"]
         for device_info in self.dev_with_battery:
             name_str = sub(r'(?i)Razer\s|\s\(Wireless\)','',device_info["name"])
@@ -115,12 +123,32 @@ class BatteryTray:
         self.last_refresh = datetime.now()
         self.update_tray_display()
 
+    # Manual refresh
+    def manual_refresh(self):
+        self.refresh_battery_info()
+        if not self.fast_refresh:
+            self.timer.start(self.interval_minutes * 60 * 1000)
+
     # Set refresh frequency
     def set_refresh_interval(self, minutes):
         self.interval_minutes = minutes
         self.settings.setValue("refresh_interval", minutes)
         self.timer.setInterval(minutes * 60 * 1000)
         self.refresh_battery_info()
+
+    # Set fast refresh
+    def set_fast_refresh(self, restore=False):
+        if restore:
+            self.timer.setInterval(self.interval_minutes * 60 * 1000)
+            self.fast_refresh = False
+            return
+        self.timer.setInterval(5000)
+        self.fast_refresh = True
+
+    # Set fast refresh option
+    def set_fast_refresh_setting(self, value):
+        self.settings.setValue("fast_refresh_enabled", value)
+        self.fast_refresh_enabled = value
 
     # Set alert settings
     def set_alert_setting(self, setting, value):
@@ -152,6 +180,11 @@ class BatteryTray:
             action.triggered.connect(lambda _, m=minutes: self.set_refresh_interval(m))
             group.addAction(action)
             self.refresh_menu.addAction(action)
+        fast_action = QAction("Fast refresh on\nno device detected", self.refresh_menu)
+        fast_action.setCheckable(True)
+        fast_action.setChecked(getattr(self, "fast_refresh_enabled", True))
+        fast_action.triggered.connect(lambda _, a=fast_action: self.set_fast_refresh_setting(a.isChecked()))
+        self.refresh_menu.addAction(fast_action)
 
     # Create alert menu
     def update_alert_menu(self):
@@ -170,7 +203,7 @@ class BatteryTray:
     # Do things on left click
     def left_click_handler(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            self.refresh_battery_info()
+            self.manual_refresh()
 
     def run(self):
         sys.exit(self.app.exec())
