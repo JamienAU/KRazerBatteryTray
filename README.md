@@ -11,8 +11,8 @@ KDE tray application to show details for Razer peripheral battery status.
 git clone https://github.com/JamienAU/KRazerBatteryTray.git
 cd KRazerBatteryTray
 sudo dnf install openrazer-meta
-pip install -r requirements.txt
-./KRazerBatteryTray & disown
+sudo dnf install PyQt6
+Run KRazerBatteryTray, or in terminal './KRazerBatteryTray & disown'
 ```
 
 # Autostart
